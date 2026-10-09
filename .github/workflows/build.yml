@@ -1,0 +1,88 @@
+name: WeaveGlass - Static checks and Rootless DEB
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weaveglass-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Static source verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python static tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Validate plist and Theos source references
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import plistlib, re
+          root = Path('.')
+          assert plistlib.loads((root / 'WeaveGlass.plist').read_bytes())['Filter']['Bundles'] == ['com.tencent.xin']
+          make = (root / 'Makefile').read_text()
+          paths = re.findall(r'([\w/]+\.(?:m|xm))', make.split('WeaveGlass_FILES =',1)[1].split('WeaveGlass_CFLAGS',1)[0])
+          missing = [p for p in paths if not (root / p).is_file()]
+          assert not missing, f'Missing compiled source files: {missing}'
+          print(f'Checked {len(paths)} Theos source paths and bundle filter.')
+          PY
+
+  rootless-package:
+    name: iOS 26+ Rootless package
+    needs: static-checks
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      THEOS: ${{ runner.temp }}/theos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Xcode and iOS SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "Found iOS SDK: $SDK_VERSION"
+          SDK_MAJOR="${SDK_VERSION%%.*}"
+          if (( SDK_MAJOR < 26 )); then
+            echo "::error::An iOS 26 or newer SDK is required, found $SDK_VERSION"
+            exit 1
+          fi
+      - name: Install build dependencies and Theos
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install ldid dpkg
+          git clone --depth 1 --recurse-submodules https://github.com/theos/theos.git "$THEOS"
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
+      - name: Compile and package Rootless DEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless 2>&1 | tee "$RUNNER_TEMP/weaveglass-build.log"
+          find packages -maxdepth 1 -type f -name '*.deb' -print -exec shasum -a 256 {} \;
+      - name: Upload DEB
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeaveGlass-0.3.0-rootless-deb
+          path: packages/*.deb
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeaveGlass-build-log
+          path: ${{ runner.temp }}/weaveglass-build.log
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,9 @@
+Package: com.weaveglass.tweak
+Name: WeaveGlass
+Version: 0.3.0
+Architecture: iphoneos-arm64
+Description: WeaveGlass iOS 26+ alpha with opt-in chat title, morphing dock, safe host matching, and offline watermark editor.
+Maintainer: WeaveGlass Project
+Author: WeaveGlass Project
+Section: Tweaks
+Depends: mobilesubstrate, firmware (>= 26.0)
